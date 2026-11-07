@@ -1560,21 +1560,54 @@
 
     // --- 2. Canvas & Rendering Context Setup ---
     const canvas = document.getElementById('diwaliCanvas');
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     const flashOverlay = document.getElementById('flash-overlay');
 
     let width = window.innerWidth;
     let height = window.innerHeight;
-    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    
+    // Performance: Detect mobile devices to tune DPR and particle limits
+    const isMobileDevice = /Android|iPhone|iPad|iPod|Windows Phone/i.test(navigator.userAgent) || (window.innerWidth < 650);
+    let dpr = isMobileDevice ? Math.min(window.devicePixelRatio || 1, 1.25) : Math.min(window.devicePixelRatio || 1, 1.75);
+
+    // Offscreen Canvas for caching static scenery (Sky, Haveli rooftops, Fairy lights & Terrace)
+    let bgCanvas = document.createElement('canvas');
+    let bgCtx = bgCanvas.getContext('2d', { alpha: false });
+
+    function renderStaticBackground() {
+      bgCanvas.width = width;
+      bgCanvas.height = height;
+
+      // 1. Midnight Sky Gradient
+      const isMobile = width < 580;
+      const groundY = isMobile ? (height * 0.65) : (height * 0.68);
+      const skyGrad = bgCtx.createLinearGradient(0, 0, 0, groundY);
+      skyGrad.addColorStop(0, '#030514');
+      skyGrad.addColorStop(0.4, '#0d0f2a');
+      skyGrad.addColorStop(0.75, '#1d0e2e');
+      skyGrad.addColorStop(1, '#2f122e');
+      bgCtx.fillStyle = skyGrad;
+      bgCtx.fillRect(0, 0, width, height);
+
+      // 2. Distant Rooftop Silhouettes & Fairy lights (rendered once to offscreen cache)
+      drawRooftopSilhouettes(bgCtx);
+
+      // 3. Ground Terrace with Rangoli
+      drawGroundStage(bgCtx);
+    }
 
     function resizeCanvas() {
       width = window.innerWidth;
       height = window.innerHeight;
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
-      canvas.width = width * dpr;
-      canvas.height = height * dpr;
+      const isMobile = /Android|iPhone|iPad|iPod|Windows Phone/i.test(navigator.userAgent) || (width < 650);
+      dpr = isMobile ? Math.min(window.devicePixelRatio || 1, 1.25) : Math.min(window.devicePixelRatio || 1, 1.75);
+      
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
       ctx.resetTransform();
       ctx.scale(dpr, dpr);
+
+      renderStaticBackground();
       initSceneLayout();
     }
     window.addEventListener('resize', resizeCanvas);
@@ -1640,6 +1673,8 @@
       constructor(x, y, vx, vy, color, life, size = 2.5, gravity = 0.08, drag = 0.98, sparkle = true) {
         this.x = x;
         this.y = y;
+        this.prevX = x;
+        this.prevY = y;
         this.vx = vx;
         this.vy = vy;
         this.color = color;
@@ -1648,19 +1683,11 @@
         this.size = size;
         this.gravity = gravity;
         this.drag = drag;
-        this.sparkle = sparkle;
-        this.trail = [];
       }
 
       update() {
-        if (this.sparkle && Math.random() < 0.6) {
-          this.trail.push({ x: this.x, y: this.y, life: 4 });
-        }
-        for (let i = this.trail.length - 1; i >= 0; i--) {
-          this.trail[i].life--;
-          if (this.trail[i].life <= 0) this.trail.splice(i, 1);
-        }
-
+        this.prevX = this.x;
+        this.prevY = this.y;
         this.vx *= this.drag;
         this.vy *= this.drag;
         this.vy += this.gravity;
@@ -1673,23 +1700,14 @@
         const progress = 1 - (this.life / this.maxLife);
         const alpha = Math.max(0, 1 - progress);
 
-        if (this.trail.length > 1) {
-          c.beginPath();
-          c.moveTo(this.trail[0].x, this.trail[0].y);
-          for (let i = 1; i < this.trail.length; i++) {
-            c.lineTo(this.trail[i].x, this.trail[i].y);
-          }
-          c.strokeStyle = this.color;
-          c.lineWidth = this.size * 0.7;
-          c.globalAlpha = alpha * 0.45;
-          c.stroke();
-        }
-
+        // Motion streak (zero allocations, beautiful realistic fire glow)
         c.beginPath();
-        c.arc(this.x, this.y, Math.max(0.5, this.size * (1 - progress * 0.5)), 0, Math.PI * 2);
-        c.fillStyle = this.color;
+        c.moveTo(this.x, this.y);
+        c.lineTo(this.prevX - this.vx * 0.8, this.prevY - this.vy * 0.8);
+        c.strokeStyle = this.color;
+        c.lineWidth = Math.max(0.8, this.size * (1 - progress * 0.5));
         c.globalAlpha = alpha;
-        c.fill();
+        c.stroke();
       }
     }
 
@@ -1848,17 +1866,23 @@
       c.closePath();
       c.fill();
 
-      // Fairy lights along rooftops
+      // Fairy lights along rooftops (high-performance dual-pass glowing points without costly shadowBlur)
       c.save();
       c.globalCompositeOperation = 'lighter';
-      for (let i = 0; i < width; i += 28) {
+      for (let i = 0; i < width; i += 26) {
         const lightY = baseY - 18 + Math.sin(i * 0.05) * 7;
-        const color = (i % 56 === 0) ? '#ffcc00' : '#ff7700';
+        const color = (i % 52 === 0) ? '#ffcc00' : '#ff7700';
+        
+        // Outer soft glow halo
+        c.beginPath();
+        c.arc(i, lightY, 5, 0, Math.PI * 2);
+        c.fillStyle = color === '#ffcc00' ? 'rgba(255, 204, 0, 0.25)' : 'rgba(255, 119, 0, 0.25)';
+        c.fill();
+
+        // Bright bulb core
         c.beginPath();
         c.arc(i, lightY, 2.2, 0, Math.PI * 2);
         c.fillStyle = color;
-        c.shadowColor = color;
-        c.shadowBlur = 8;
         c.fill();
       }
       c.restore();
@@ -2004,8 +2028,6 @@
         c.bezierCurveTo(flameTipX + 1.5, flameTipY + 14, 4, -14, 3, -8);
         c.closePath();
         c.fillStyle = '#ffffff';
-        c.shadowColor = '#ffeaa7';
-        c.shadowBlur = 12;
         c.fill();
         c.restore();
 
@@ -2568,8 +2590,6 @@
           c.beginPath();
           c.arc(fx, fy, 4, 0, Math.PI * 2);
           c.fillStyle = '#ff3300';
-          c.shadowColor = '#ffcc00';
-          c.shadowBlur = 10;
           c.fill();
 
           c.beginPath();
@@ -3012,8 +3032,6 @@
         c.beginPath();
         c.arc(this.x, this.y, 4.5, 0, Math.PI * 2);
         c.fillStyle = '#ffffff';
-        c.shadowColor = '#ffd700';
-        c.shadowBlur = 15;
         c.fill();
         c.restore();
       }
@@ -3297,16 +3315,10 @@
       ctx.save();
       ctx.translate(shakeOffsetX, shakeOffsetY);
 
-      // 1. Midnight Sky Gradient
-      const skyGrad = ctx.createLinearGradient(0, 0, 0, height * 0.70);
-      skyGrad.addColorStop(0, '#030514');
-      skyGrad.addColorStop(0.4, '#0d0f2a');
-      skyGrad.addColorStop(0.75, '#1d0e2e');
-      skyGrad.addColorStop(1, '#2f122e');
-      ctx.fillStyle = skyGrad;
-      ctx.fillRect(0, 0, width, height);
+      // 1. Blit pre-rendered static scenery from offscreen canvas (Fast GPU texture copy)
+      ctx.drawImage(bgCanvas, 0, 0);
 
-      // 2. Twinkling Stars
+      // 2. Twinkling Stars (lightweight pass)
       ctx.save();
       for (let i = 0; i < stars.length; i++) {
         const star = stars[i];
@@ -3317,12 +3329,6 @@
         ctx.fill();
       }
       ctx.restore();
-
-      // 3. Distant Rooftops
-      drawRooftopSilhouettes(ctx);
-
-      // 4. Street Ground Stage
-      drawGroundStage(ctx);
 
       // 5. Authentic Clay Diyas
       for (let i = 0; i < diyas.length; i++) {
@@ -3363,7 +3369,12 @@
       }
       ctx.restore();
 
-      // 10. Update & Draw Spark Particles
+      // 10. Update & Draw Spark Particles (Mobile performance capped)
+      const maxAllowedSparks = (width < 600) ? 140 : 350;
+      if (particles.length > maxAllowedSparks) {
+        particles.splice(0, particles.length - maxAllowedSparks);
+      }
+
       ctx.save();
       ctx.globalCompositeOperation = 'lighter';
       for (let i = particles.length - 1; i >= 0; i--) {
